@@ -19,7 +19,7 @@ import headerpage from '@/components/layout/headerPage.vue'
   .fixed-header {
     position: fixed;
     top: 0;
-    z-index: 100;
+    z-index: 999;
   }
 }
 </style>
