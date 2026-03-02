@@ -1,0 +1,28 @@
+{
+  "changed_files": [
+    {
+      "file": "backup_mojibake_20260302_135612/src/components/home/homePage.vue",
+      "fixed_lines": 2
+    },
+    {
+      "file": "backup_mojibake_20260302_135612/src/components/layout/headerPage.vue",
+      "fixed_lines": 10
+    },
+    {
+      "file": "backup_mojibake_20260302_135612/src/components/layout/InteractiveBackground.vue",
+      "fixed_lines": 9
+    },
+    {
+      "file": "src/components/home/homePage.vue",
+      "fixed_lines": 2
+    },
+    {
+      "file": "src/components/layout/headerPage.vue",
+      "fixed_lines": 10
+    },
+    {
+      "file": "src/components/layout/InteractiveBackground.vue",
+      "fixed_lines": 9
+    }
+  ]
+}
