@@ -40,7 +40,6 @@
         fill="#D9D9D9"
       />
     </svg>
-    <div class="background-solid"></div>
 
     <div class="row1">
       <div class="row1-title">
@@ -180,14 +179,14 @@ const renderBgPaths = (metas: BgPathMeta[], anchorX: number) => {
 
 const createBgPathMetas = () => {
   const svg = document.querySelector('.background-svg') as SVGSVGElement | null
-  const solid = document.querySelector('.background-solid') as HTMLElement | null
   const paths = document.querySelectorAll('.background-svg path') as NodeListOf<SVGPathElement>
-  if (!svg || !solid || !paths.length) return null
+  if (!svg || !paths.length) return null
 
   const vb = svg.viewBox.baseVal
   const vbWidth = vb.width || 1920
   const vbHeight = vb.height || 920
-  const yOverscan = vbHeight * 0.12
+  // 让 path 长到可视区域底部就结束，避免画面已铺满但时间线还在跑不可见的 overscan
+  const yOverscan = 0
 
   const metas: BgPathMeta[] = Array.from(paths).map((el) => {
     const originalD = el.dataset.originalD || el.getAttribute('d') || ''
@@ -224,7 +223,7 @@ const createBgPathMetas = () => {
     }
   })
 
-  return { svg, solid, vbWidth, metas }
+  return { svg, vbWidth, metas }
 }
 
 const initBackgroundLINeAnimation = async () => {
@@ -270,13 +269,10 @@ const initBackgroundScrollAnimation = async () => {
   const ctx = createBgPathMetas()
   if (!ctx) return
 
-  const { svg, solid, vbWidth, metas } = ctx
+  const { svg, vbWidth, metas } = ctx
 
   bgScrollTl?.kill()
-
   gsap.set(svg, { autoAlpha: 1 })
-  gsap.set(solid, { autoAlpha: 0 })
-
   metas.forEach((meta) => {
     meta.sx = 1
     meta.growY = 0
@@ -287,11 +283,12 @@ const initBackgroundScrollAnimation = async () => {
     scrollTrigger: {
       trigger: '.page',
       start: 'top top',
-      end: () => `+=${Math.max(window.innerHeight * 9, 8000)}`,
+      end: () => `+=${Math.max(window.innerHeight * 2, 1800)}`,
       pin: true,
       pinSpacing: true,
-      scrub: 1,
+      scrub: true,
       invalidateOnRefresh: true,
+      markers: true,
     },
   })
 
@@ -299,24 +296,22 @@ const initBackgroundScrollAnimation = async () => {
   metas.forEach((meta) => {
     tl.to(meta, {
       sx: meta.scaleXToFullWidth,
-      duration: 0.45,
+      duration: 0.05,
       ease: 'none',
       onUpdate: () => renderBgPath(meta, vbWidth),
     })
   })
 
-  // 阶段2：保持原路径台阶造型，所有 path 同时向下延展
-  tl.to(metas, {
-    growY: (i: number) => metas[i].growYToBottom,
-    duration: 0.9,
-    ease: 'none',
-    onUpdate: () => renderBgPaths(metas, vbWidth),
-  })
-
-  // 阶段3：隐藏 svg，同时显示同色背景
-  tl.addLabel('swap', '+=0.4')
-  tl.to(svg, { autoAlpha: 0, duration: 0.35 }, 'swap')
-  tl.to(solid, { autoAlpha: 1, duration: 0.35 }, 'swap')
+  // 阶段2：保持原路径台阶造型，所有 path 同时向下延展并以 SVG 铺满状态结束
+  tl.to(
+    metas,
+    {
+      growY: (i: number) => metas[i].growYToBottom,
+      duration: 0.8,
+      ease: 'none',
+      onUpdate: () => renderBgPaths(metas, vbWidth),
+    },
+  )
 
   bgScrollTl = tl
   ScrollTrigger.refresh()
@@ -418,17 +413,6 @@ onBeforeUnmount(() => {
     height: 100vh;
     pointer-events: none;
     z-index: 1;
-  }
-
-  .background-solid {
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    background: #d9d9d9;
-    opacity: 0;
-    pointer-events: none;
-    z-index: 0;
   }
 
   .row1 {
