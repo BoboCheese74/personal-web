@@ -3,6 +3,7 @@
     <svg
       class="background-svg"
       viewBox="0 0 1920 920"
+      preserveAspectRatio="none"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
@@ -39,6 +40,7 @@
         fill="#D9D9D9"
       />
     </svg>
+    <div class="background-solid"></div>
 
     <div class="row1">
       <div class="row1-title">
@@ -66,7 +68,7 @@ import gsap from 'gsap'
 import ScrollTrigger from 'gsap/ScrollTrigger'
 import ScrollToPlugin from 'gsap/ScrollToPlugin'
 import SplitText from 'gsap/SplitText'
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useLoadingStore } from '@/stores/loading'
 import Lenis from 'lenis'
 
@@ -77,13 +79,249 @@ gsap.registerPlugin(ScrollTrigger)
 gsap.registerPlugin(ScrollToPlugin)
 gsap.registerPlugin(SplitText)
 
-// 创建平滑滚动
-const lenis = new Lenis({
-  duration: 1,
-  easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-  smoothWheel: true,
-  autoRaf: true,
-})
+let lenis: Lenis | null = null
+
+const handleScrollTriggerRefresh = () => {
+  lenis?.resize()
+}
+
+const ensureLenis = () => {
+  if (lenis) return
+
+  lenis = new Lenis({
+    duration: 1,
+    easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+    smoothWheel: true,
+    autoRaf: true,
+  })
+
+  lenis.on('scroll', ScrollTrigger.update)
+  ScrollTrigger.addEventListener('refresh', handleScrollTriggerRefresh)
+}
+
+let bgScrollTl: gsap.core.Timeline | null = null
+
+type PathCommand =
+  | { cmd: 'M'; x: number; y: number }
+  | { cmd: 'H'; x: number }
+  | { cmd: 'V'; y: number }
+  | { cmd: 'Z' }
+
+type BgPathMeta = {
+  el: SVGPathElement
+  commands: PathCommand[]
+  yTop: number
+  width: number
+  height: number
+  sx: number
+  growY: number
+  growYToBottom: number
+  closingVIndex: number
+  scaleXToFullWidth: number
+}
+
+const parsePathCommands = (d: string): PathCommand[] => {
+  const tokens = d.match(/[MHVZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []
+  const commands: PathCommand[] = []
+  let i = 0
+
+  while (i < tokens.length) {
+    const token = tokens[i++]
+    if (token === 'M') {
+      const x = Number(tokens[i++])
+      const y = Number(tokens[i++])
+      commands.push({ cmd: 'M', x, y })
+    } else if (token === 'H') {
+      const x = Number(tokens[i++])
+      commands.push({ cmd: 'H', x })
+    } else if (token === 'V') {
+      const y = Number(tokens[i++])
+      commands.push({ cmd: 'V', y })
+    } else if (token === 'Z') {
+      commands.push({ cmd: 'Z' })
+    }
+  }
+
+  return commands
+}
+
+const formatPathNumber = (value: number) => {
+  if (Math.abs(value) < 1e-4) return '0'
+  return Number(value.toFixed(4)).toString()
+}
+
+const buildPathD = (meta: BgPathMeta, anchorX: number) => {
+  const mapX = (x: number) => anchorX - (anchorX - x) * meta.sx
+
+  return meta.commands
+    .map((command, index) => {
+      if (command.cmd === 'M') {
+        return `M${formatPathNumber(mapX(command.x))} ${formatPathNumber(command.y)}`
+      }
+      if (command.cmd === 'H') {
+        return `H${formatPathNumber(mapX(command.x))}`
+      }
+      if (command.cmd === 'V') {
+        const y = index === meta.closingVIndex ? command.y : command.y + meta.growY
+        return `V${formatPathNumber(y)}`
+      }
+      return 'Z'
+    })
+    .join('')
+}
+
+const renderBgPath = (meta: BgPathMeta, anchorX: number) => {
+  meta.el.setAttribute('d', buildPathD(meta, anchorX))
+}
+
+const renderBgPaths = (metas: BgPathMeta[], anchorX: number) => {
+  metas.forEach((meta) => renderBgPath(meta, anchorX))
+}
+
+const createBgPathMetas = () => {
+  const svg = document.querySelector('.background-svg') as SVGSVGElement | null
+  const solid = document.querySelector('.background-solid') as HTMLElement | null
+  const paths = document.querySelectorAll('.background-svg path') as NodeListOf<SVGPathElement>
+  if (!svg || !solid || !paths.length) return null
+
+  const vb = svg.viewBox.baseVal
+  const vbWidth = vb.width || 1920
+  const vbHeight = vb.height || 920
+  const yOverscan = vbHeight * 0.12
+
+  const metas: BgPathMeta[] = Array.from(paths).map((el) => {
+    const originalD = el.dataset.originalD || el.getAttribute('d') || ''
+    if (!el.dataset.originalD) {
+      el.dataset.originalD = originalD
+    }
+
+    const commands = parsePathCommands(originalD)
+    const box = el.getBBox()
+    const width = Math.max(box.width, 1)
+    const height = Math.max(box.height, 1)
+    const vIndexes = commands.reduce<number[]>((acc, command, index) => {
+      if (command.cmd === 'V') acc.push(index)
+      return acc
+    }, [])
+    const closingVIndex = vIndexes.length ? vIndexes[vIndexes.length - 1] : -1
+    const maxBottomY = vIndexes.reduce((maxY, index) => {
+      if (index === closingVIndex) return maxY
+      const command = commands[index] as Extract<PathCommand, { cmd: 'V' }>
+      return Math.max(maxY, command.y)
+    }, box.y + height)
+
+    return {
+      el,
+      commands,
+      yTop: box.y,
+      width,
+      height,
+      sx: 1,
+      growY: 0,
+      growYToBottom: Math.max(0, vbHeight + yOverscan - maxBottomY),
+      closingVIndex,
+      scaleXToFullWidth: Math.max(1, vbWidth / width),
+    }
+  })
+
+  return { svg, solid, vbWidth, metas }
+}
+
+const initBackgroundLINeAnimation = async () => {
+  await nextTick()
+
+  const ctx = createBgPathMetas()
+  if (!ctx) return
+
+  const { vbWidth, metas } = ctx
+  const widths = metas.map((meta) => meta.width)
+  const maxWidth = Math.max(...widths, 1)
+
+  metas.forEach((meta) => {
+    meta.sx = 0
+    meta.growY = 0
+  })
+  renderBgPaths(metas, vbWidth)
+
+  return new Promise<void>((resolve) => {
+    gsap.to(metas, {
+      sx: 1,
+      duration: (i) => 0.35 + (widths[i] / maxWidth) * 0.5, // 按线宽变长时长（变长感更明显）
+      stagger: 0.1, // 依次播放
+      ease: 'power2.out',
+      onUpdate: () => {
+        renderBgPaths(metas, vbWidth)
+      },
+      onComplete: () => {
+        metas.forEach((meta) => {
+          meta.sx = 1
+          meta.growY = 0
+        })
+        renderBgPaths(metas, vbWidth)
+        resolve()
+      },
+    })
+  })
+}
+
+const initBackgroundScrollAnimation = async () => {
+  await nextTick()
+
+  const ctx = createBgPathMetas()
+  if (!ctx) return
+
+  const { svg, solid, vbWidth, metas } = ctx
+
+  bgScrollTl?.kill()
+
+  gsap.set(svg, { autoAlpha: 1 })
+  gsap.set(solid, { autoAlpha: 0 })
+
+  metas.forEach((meta) => {
+    meta.sx = 1
+    meta.growY = 0
+  })
+  renderBgPaths(metas, vbWidth)
+
+  const tl = gsap.timeline({
+    scrollTrigger: {
+      trigger: '.page',
+      start: 'top top',
+      end: () => `+=${Math.max(window.innerHeight * 9, 8000)}`,
+      pin: true,
+      pinSpacing: true,
+      scrub: 1,
+      invalidateOnRefresh: true,
+    },
+  })
+
+  // 阶段1：依次横向变长（右 -> 左）
+  metas.forEach((meta) => {
+    tl.to(meta, {
+      sx: meta.scaleXToFullWidth,
+      duration: 0.45,
+      ease: 'none',
+      onUpdate: () => renderBgPath(meta, vbWidth),
+    })
+  })
+
+  // 阶段2：保持原路径台阶造型，所有 path 同时向下延展
+  tl.to(metas, {
+    growY: (i: number) => metas[i].growYToBottom,
+    duration: 0.9,
+    ease: 'none',
+    onUpdate: () => renderBgPaths(metas, vbWidth),
+  })
+
+  // 阶段3：隐藏 svg，同时显示同色背景
+  tl.addLabel('swap', '+=0.4')
+  tl.to(svg, { autoAlpha: 0, duration: 0.35 }, 'swap')
+  tl.to(solid, { autoAlpha: 1, duration: 0.35 }, 'swap')
+
+  bgScrollTl = tl
+  ScrollTrigger.refresh()
+  lenis?.resize()
+}
 
 const initTitleAnimation = async () => {
   await nextTick()
@@ -113,18 +351,26 @@ const initTitleAnimation = async () => {
   })
 }
 
+const runEntryAnimations = async () => {
+  initTitleAnimation()
+  await initBackgroundLINeAnimation()
+  initBackgroundScrollAnimation()
+}
+
 // 定义动画
 onMounted(() => {
+  ensureLenis()
+
   // 如果已经加载完成，直接执行动画
   if (!loadingStore.isLoading) {
-    initTitleAnimation()
+    runEntryAnimations()
   } else {
     // 否则监听加载状态，加载完成后执行动画
     const stopWatcher = watch(
       () => loadingStore.isLoading,
       (isLoading) => {
         if (!isLoading) {
-          initTitleAnimation()
+          runEntryAnimations()
           stopWatcher() // 执行一次后停止监听
         }
       },
@@ -149,6 +395,13 @@ onMounted(() => {
   // })
   // }
 })
+
+onBeforeUnmount(() => {
+  bgScrollTl?.kill()
+  ScrollTrigger.removeEventListener('refresh', handleScrollTriggerRefresh)
+  lenis?.destroy()
+  lenis = null
+})
 </script>
 
 <style scoped lang="scss">
@@ -159,10 +412,23 @@ onMounted(() => {
   align-items: center;
 
   .background-svg {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .background-solid {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #d9d9d9;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 0;
   }
 
   .row1 {
